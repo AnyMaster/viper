@@ -2,7 +2,7 @@
 # This gets a list of Projects for the nav bar
 import os
 projects_path = os.path.join(os.getcwd(), 'projects')
-projects = ['Main']
+projects = ['default']
 if os.path.exists(projects_path):
     for project in os.listdir(projects_path):
         project_path = os.path.join(projects_path, project)
@@ -64,7 +64,7 @@ end
                     <a href="#" class="dropdown-toggle" data-toggle="dropdown">Help <span class="caret"></span></a>
                     <ul class="dropdown-menu" role="menu">
                         <li><a href="http://viper-framework.readthedocs.org/en/latest/" target="_blank">Docs</a></li>
-                        <li><a href="https://github.com/botherder/viper/issues" target="_blank">Issues</a></li>
+                        <li><a href="https://github.com/viper-framework/viper/issues" target="_blank">Issues</a></li>
                         <li class="divider"></li>
                         <li><a href="#" data-toggle="modal" data-target="#aboutModal">About</a></li>
                     </ul>

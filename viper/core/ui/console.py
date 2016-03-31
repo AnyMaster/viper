@@ -1,26 +1,36 @@
-# This file is part of Viper - https://github.com/botherder/viper
+# This file is part of Viper - https://github.com/viper-framework/viper
 # See the file 'LICENSE' for copying permission.
 
 import os
+import sys
 import glob
 import atexit
 import readline
 import traceback
 
-from viper.common.out import *
+from viper.common.out import print_error
+from viper.common.colors import cyan, magenta, white, bold, blue
 from viper.core.session import __sessions__
 from viper.core.plugins import __modules__
 from viper.core.project import __project__
 from viper.core.ui.commands import Commands
-from viper.core.storage import get_sample_path
 from viper.core.database import Database
+from viper.core.config import Config
+
+cfg = Config()
+
+# For python2 & 3 compat, a bit dirty, but it seems to be the least bad one
+try:
+    input = raw_input
+except NameError:
+    pass
 
 def logo():
-    print("""         _                   
-        (_) 
-   _   _ _ ____  _____  ____ 
+    print("""         _
+        (_)
+   _   _ _ ____  _____  ____
   | | | | |  _ \| ___ |/ ___)
-   \ V /| | |_| | ____| |    
+   \ V /| | |_| | ____| |
     \_/ |_|  __/|_____)_| v1.3-dev
           |_|
     """)
@@ -28,14 +38,20 @@ def logo():
     db = Database()
     count = db.get_sample_count()
 
+    try:
+        db.find('all')
+    except:
+        print_error("You need to update your Viper database. Run 'python update.py -d'")
+        sys.exit()
+
     if __project__.name:
         name = __project__.name
     else:
         name = 'default'
 
-    print(magenta("You have " + bold(count)) + 
-          magenta(" files in your " + bold(name) + 
-          magenta(" repository".format(bold(name)))))
+    print(magenta("You have " + bold(count)) +
+          magenta(" files in your " + bold(name)) +
+          magenta(" repository"))
 
 class Console(object):
 
@@ -68,55 +84,10 @@ class Console(object):
                 # the file which is currently being analyzed.
                 data = data.replace('$self', __sessions__.current.file.path)
             else:
-                print("No session opened")
+                print("No open session")
                 return None
 
         return data
-
-    def print_output(self, output, filename):
-        if not output:
-            return
-        if filename:
-            with open(filename.strip(), 'a') as out:
-                for entry in output:
-                    if entry['type'] == 'info':
-                        out.write('[*] {0}\n'.format(entry['data']))
-                    elif entry['type'] == 'item':
-                        out.write('  [-] {0}\n'.format(entry['data']))
-                    elif entry['type'] == 'warning':
-                        out.write('[!] {0}\n'.format(entry['data']))
-                    elif entry['type'] == 'error':
-                        out.write('[!] {0}\n'.format(entry['data']))
-                    elif entry['type'] == 'success':
-                        out.write('[+] {0}\n'.format(entry['data']))
-                    elif entry['type'] == 'table':
-                        out.write(str(table(
-                            header=entry['data']['header'],
-                            rows=entry['data']['rows']
-                        )))
-                        out.write('\n')
-                    else:
-                        out.write('{0}\n'.format(entry['data']))
-            print_success("Output written to {0}".format(filename))
-        else:
-            for entry in output:
-                if entry['type'] == 'info':
-                    print_info(entry['data'])
-                elif entry['type'] == 'item':
-                    print_item(entry['data'])
-                elif entry['type'] == 'warning':
-                    print_warning(entry['data'])
-                elif entry['type'] == 'error':
-                    print_error(entry['data'])
-                elif entry['type'] == 'success':
-                    print_success(entry['data'])
-                elif entry['type'] == 'table':
-                    print(table(
-                        header=entry['data']['header'],
-                        rows=entry['data']['rows']
-                    ))
-                else:
-                    print(entry['data'])
 
     def stop(self):
         # Stop main loop.
@@ -155,12 +126,7 @@ class Console(object):
         # If there is an history file, read from it and load the history
         # so that they can be loaded in the shell.
         # Now we are storing the history file in the local project folder
-        # if there is an opened project. Otherwise just store it in the
-        # home directory.
-        if __project__.path:
-            history_path = os.path.join(__project__.path, 'history')
-        else:
-            history_path = os.path.expanduser('~/.viperhistory')
+        history_path = os.path.join(__project__.path, 'history')
 
         if os.path.exists(history_path):
             readline.read_history_file(history_path)
@@ -180,14 +146,26 @@ class Console(object):
                 prefix = bold(cyan(__project__.name)) + ' '
 
             if __sessions__.is_set():
-                prompt = prefix + cyan('viper ', True) + white(__sessions__.current.file.name, True) + cyan(' > ', True)
+                stored = ''
+                filename = ''
+                if __sessions__.current.file:
+                    filename = __sessions__.current.file.name
+                    if not Database().find(key='sha256', value=__sessions__.current.file.sha256):
+                        stored = magenta(' [not stored]', True)
+
+                misp = ''
+                if __sessions__.current.misp_event:
+                    misp = ' [MISP {}]'.format(__sessions__.current.misp_event.event_id)
+
+                prompt = (prefix + cyan('viper ', True) +
+                          white(filename, True) + blue(misp, True) + stored + cyan(' > ', True))
             # Otherwise display the basic prompt.
             else:
                 prompt = prefix + cyan('viper > ', True)
 
             # Wait for input from the user.
             try:
-                data = raw_input(prompt).strip()
+                data = input(prompt).strip()
             except KeyboardInterrupt:
                 print("")
             # Terminate on EOF.
@@ -203,7 +181,7 @@ class Console(object):
                 # Skip if the input is empty.
                 if not data:
                     continue
-                
+
                 # Check for output redirection
                 # If there is a > in the string, we assume the user wants to output to file.
                 filename = False
@@ -243,7 +221,6 @@ class Console(object):
                         # execute it.
                         if root in self.cmd.commands:
                             self.cmd.commands[root]['obj'](*args)
-                            self.print_output(self.cmd.output, filename)
                             del(self.cmd.output[:])
                         # If the root command is part of loaded modules, we initialize
                         # the module and execute it.
@@ -252,12 +229,16 @@ class Console(object):
                             module.set_commandline(args)
                             module.run()
 
-                            self.print_output(module.output, filename)
+                            if cfg.modules.store_output and __sessions__.is_set():
+                                try:
+                                    Database().add_analysis(__sessions__.current.file.sha256, split_command, module.output)
+                                except:
+                                    pass
                             del(module.output[:])
                         else:
                             print("Command not recognized.")
                     except KeyboardInterrupt:
                         pass
-                    except Exception as e:
+                    except Exception:
                         print_error("The command {0} raised an exception:".format(bold(root)))
                         traceback.print_exc()

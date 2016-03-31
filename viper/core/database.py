@@ -1,17 +1,25 @@
-# This file is part of Viper - https://github.com/botherder/viper
+# This file is part of Viper - https://github.com/viper-framework/viper
 # See the file 'LICENSE' for copying permission.
 
+from __future__ import unicode_literals  # make all strings unicode in python2
+
+import os
+import json
 from datetime import datetime
 
-from sqlalchemy import *
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text
+from sqlalchemy import Table, Index, create_engine
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, backref, sessionmaker
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 
-from viper.common.out import *
-from viper.common.objects import File, Singleton
+from viper.common.out import print_warning, print_error
+from viper.common.objects import File
 from viper.core.project import __project__
+from viper.core.config import Config
+
+cfg = Config()
 
 Base = declarative_base()
 
@@ -20,7 +28,8 @@ association_table = Table(
     Base.metadata,
     Column('tag_id', Integer, ForeignKey('tag.id')),
     Column('note_id', Integer, ForeignKey('note.id')),
-    Column('malware_id', Integer, ForeignKey('malware.id'))
+    Column('malware_id', Integer, ForeignKey('malware.id')),
+    Column('analysis_id', Integer, ForeignKey('analysis.id'))
 )
 
 class Malware(Base):
@@ -38,6 +47,8 @@ class Malware(Base):
     sha512 = Column(String(128), nullable=False)
     ssdeep = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=False), default=datetime.now(), nullable=False)
+    parent_id = Column(Integer(), ForeignKey('malware.id'))
+    parent = relationship('Malware', lazy='subquery', remote_side=[id])
     tag = relationship(
         'Tag',
         secondary=association_table,
@@ -47,7 +58,13 @@ class Malware(Base):
         'Note',
         cascade='all, delete',
         secondary=association_table,
-        backref=backref('malware', cascade='all')
+        backref=backref('malware')
+    )
+    analysis = relationship(
+        'Analysis',
+        cascade='all, delete',
+        secondary=association_table,
+        backref=backref('malware')
     )
     __table_args__ = (Index(
         'hash_index',
@@ -80,7 +97,8 @@ class Malware(Base):
                  type=None,
                  mime=None,
                  ssdeep=None,
-                 name=None):
+                 name=None,
+                 parent=None):
         self.md5 = md5
         self.sha1 = sha1
         self.crc32 = crc32
@@ -91,6 +109,7 @@ class Malware(Base):
         self.mime = mime
         self.ssdeep = ssdeep
         self.name = name
+        self.parent = parent
 
 class Tag(Base):
     __tablename__ = 'tag'
@@ -134,6 +153,31 @@ class Note(Base):
         self.title = title
         self.body = body
 
+
+class Analysis(Base):
+    __tablename__ = 'analysis'
+
+    id = Column(Integer(), primary_key=True)
+    cmd_line = Column(String(255), nullable=True)
+    results = Column(Text(), nullable=False)
+    stored_at = Column(DateTime(timezone=False), default=datetime.now(), nullable=False)
+
+    def to_dict(self):
+        row_dict = {}
+        for column in self.__table__.columns:
+            value = getattr(self, column.name)
+            row_dict[column.name] = value
+
+        return row_dict
+
+    def __repr__(self):
+        return "<Note ('{0}','{1}'>".format(self.id, self.cmd_line)
+
+    def __init__(self, cmd_line, results):
+        self.cmd_line = cmd_line
+        self.results = results
+
+
 class Database:
     #__metaclass__ = Singleton
 
@@ -157,11 +201,14 @@ class Database:
         if not malware_entry:
             return
 
-        tags = tags.strip()
-        if ',' in tags:
-            tags = tags.split(',')
-        else:
-            tags = tags.split()
+        # The tags argument might be a list, a single tag, or a 
+        # comma-separated list of tags.
+        if isinstance(tags, str):
+            tags = tags.strip()
+            if ',' in tags:
+                tags = tags.split(',')
+            else:
+                tags = tags.split()
 
         for tag in tags:
             tag = tag.strip().lower()
@@ -171,7 +218,7 @@ class Database:
             try:
                 malware_entry.tag.append(Tag(tag))
                 session.commit()
-            except IntegrityError as e:
+            except IntegrityError:
                 session.rollback()
                 try:
                     malware_entry.tag.append(session.query(Tag).filter(Tag.tag==tag).first())
@@ -256,11 +303,14 @@ class Database:
         finally:
             session.close()
 
-    def add(self, obj, name=None, tags=None):
+    def add(self, obj, name=None, tags=None, parent_sha=None):
         session = self.Session()
 
         if not name:
             name = obj.name
+
+        if parent_sha:
+            parent_sha = session.query(Malware).filter(Malware.sha256 == parent_sha).first()
 
         if isinstance(obj, File):
             try:
@@ -273,7 +323,8 @@ class Database:
                                         type=obj.type,
                                         mime=obj.mime,
                                         ssdeep=obj.ssdeep,
-                                        name=name)
+                                        name=name,
+                                        parent=parent_sha)
                 session.add(malware_entry)
                 session.commit()
             except IntegrityError:
@@ -289,6 +340,29 @@ class Database:
 
         return True
 
+    def rename(self, id, name):
+        session = self.Session()
+
+        if not name:
+            return False
+
+        try:
+            malware = session.query(Malware).get(id)
+            if not malware:
+                print_error("The opened file doesn't appear to be in the database, have you stored it yet?")
+                return False
+
+            malware.name = name
+            session.commit()
+        except SQLAlchemyError as e:
+            print_error("Unable to rename file: {}".format(e))
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+        return True
+
     def delete_file(self, id):
         session = self.Session()
 
@@ -296,7 +370,7 @@ class Database:
             malware = session.query(Malware).get(id)
             if not malware:
                 print_error("The opened file doesn't appear to be in the database, have you stored it yet?")
-                return
+                return False
 
             session.delete(malware)
             session.commit()
@@ -316,6 +390,17 @@ class Database:
 
         if key == 'all':
             rows = session.query(Malware).all()
+        elif key == 'ssdeep':
+            ssdeep_val = str(value)
+            rows = session.query(Malware).filter(Malware.ssdeep.contains(ssdeep_val)).all()
+        elif key == 'any':
+            prefix_val = str(value)
+            rows = session.query(Malware).filter(Malware.name.startswith(prefix_val) |
+                                                 Malware.md5.startswith(prefix_val) |
+                                                 Malware.sha1.startswith(prefix_val) |
+                                                 Malware.sha256.startswith(prefix_val) |
+                                                 Malware.type.contains(prefix_val) |
+                                                 Malware.mime.contains(prefix_val)).all()
         elif key == 'latest':
             if value:
                 try:
@@ -329,6 +414,8 @@ class Database:
             rows = session.query(Malware).order_by(Malware.id.desc()).limit(value).offset(offset)
         elif key == 'md5':
             rows = session.query(Malware).filter(Malware.md5 == value).all()
+        elif key == 'sha1':
+            rows = session.query(Malware).filter(Malware.sha1 == value).all()
         elif key == 'sha256':
             rows = session.query(Malware).filter(Malware.sha256 == value).all()
         elif key == 'tag':
@@ -341,7 +428,8 @@ class Database:
 
             rows = session.query(Malware).filter(Malware.name.like(value)).all()
         elif key == 'note':
-            rows = session.query(Malware).filter(Malware.note.any(Note.body.like(u'%' + unicode(value) + u'%'))).all()
+            value = '%{0}%'.format(value)
+            rows = session.query(Malware).filter(Malware.note.any(Note.body.like(value))).all()
         elif key == 'type':
             rows = session.query(Malware).filter(Malware.type.like('%{0}%'.format(value))).all()
         elif key == 'mime':
@@ -354,3 +442,59 @@ class Database:
     def get_sample_count(self):
         session = self.Session()
         return session.query(Malware.id).count()
+
+    def add_parent(self, malware_sha256, parent_sha256):
+        session = self.Session()
+
+        try:
+            malware = session.query(Malware).filter(Malware.sha256 == malware_sha256).first()
+            malware.parent = session.query(Malware).filter(Malware.sha256 == parent_sha256).first()
+            session.commit()
+        except SQLAlchemyError as e:
+            print_error("Unable to add parent: {0}".format(e))
+            session.rollback()
+        finally:
+            session.close()
+
+    def delete_parent(self, malware_sha256):
+        session = self.Session()
+
+        try:
+            malware = session.query(Malware).filter(Malware.sha256 == malware_sha256).first()
+            malware.parent = None
+            session.commit()
+        except SQLAlchemyError as e:
+            print_error("Unable to delete parent: {0}".format(e))
+            session.rollback()
+        finally:
+            session.close()
+
+    def get_children(self, parent_id):
+        session = self.Session()
+        children = session.query(Malware).filter(Malware.parent_id == parent_id).all()
+        child_samples = ''
+        for child in children:
+            child_samples += '{0},'.format(child.sha256)
+        return child_samples
+
+    # Store Module / Cmd Output
+    def add_analysis(self, sha256, cmd_line, results):
+        results = json.dumps(results)
+        session = self.Session()
+
+        malware_entry = session.query(Malware).filter(Malware.sha256 == sha256).first()
+        if not malware_entry:
+            return
+        try:
+            malware_entry.analysis.append(Analysis(cmd_line, results))
+            session.commit()
+        except SQLAlchemyError as e:
+            print_error("Unable to store analysis: {0}".format(e))
+            session.rollback()
+        finally:
+            session.close()
+
+    def get_analysis(self, analysis_id):
+        session = self.Session()
+        analysis = session.query(Analysis).get(analysis_id)
+        return analysis

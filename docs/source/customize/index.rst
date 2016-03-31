@@ -53,6 +53,40 @@ When a module is invoked from the Viper shell it can be provided with a number o
                 elif self.args.that:
                     print("That is FOO")
 
+Using the Config File
+---------------------
+
+Viper provides a config file that will allow you to store user editable sections in a single file rather than inside the modules.
+
+    /usr/share/viper/viper.conf.sample
+
+You can easily access the config file:
+
+    .. code-block:: python
+        :linenos:
+
+        from viper.core.config import Config
+
+        cfg = Config()
+
+
+From here you can access any element in the config file by name:
+
+    .. code-block:: python
+        :linenos:
+
+        from viper.core.config import Config
+
+        cfg = Config()
+
+        config_item = cfg.modulename.config_item
+
+        # Example Getting VirusTotal Key
+
+        vt_key = cfg.virustotal.virustotal_key
+
+
+
 
 Accessing the session
 ---------------------
@@ -99,7 +133,7 @@ Here is an example:
             def run(self):
                 # Check if there is an open session.
                 if not __sessions__.is_set():
-                    # No session opened.
+                    # No open session.
                     return
 
                 # Print attributes of the opened file.
@@ -179,3 +213,4 @@ You can also easily print tables, such as in the following example:
                 ]
 
                 self.log('table', dict(header=header, rows=rows))
+

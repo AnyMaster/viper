@@ -24,9 +24,9 @@ Table of Content
    known_issues/index
    final_remarks/index
 
-.. _Viper: https://www.viper.li
+.. _Viper: http://www.viper.li
 .. _BSD 3-Clause: http://opensource.org/licenses/BSD-3-Clause
 .. _Claudio Guarnieri: https://twitter.com/botherder
 .. _VxCage: https://github.com/botherder/vxcage
-.. _GitHub: https://github.com/botherder/viper
+.. _GitHub: https://github.com/viper-framework/viper
 .. _here: https://nex.sx
